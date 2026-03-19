@@ -1,0 +1,14 @@
+{
+  "name": "com.cubeage.sdk",
+  "version": "2.0.0",
+  "displayName": "Cubeage Platform SDK",
+  "description": "Official Cubeage Platform V2 SDK — anonymous auth, session tracking, analytics, IAP, attribution.",
+  "unity": "2022.3",
+  "author": {
+    "name": "Cubeage",
+    "url": "https://cubeage.com"
+  },
+  "keywords": ["cubeage", "platform", "sdk", "analytics"],
+  "changelogUrl": "https://github.com/Cubeage/cubeage-game-sdk/blob/main/CHANGELOG.md",
+  "documentationUrl": "https://github.com/Cubeage/cubeage-game-sdk"
+}
