@@ -71,6 +71,10 @@ namespace CubeageSDK
         private string _currentSessionId;
         private bool   _sessionActive;
 
+        // Legacy migration
+        private string _legacyTokenKey;
+        private const string PrefMigrationDone = "cubeage_sdk_migration_done";
+
         private readonly SdkConfig _config = new SdkConfig();
         private readonly List<QueuedRequest> _offlineQueue = new List<QueuedRequest>();
         private bool _isFlushing;
@@ -319,7 +323,27 @@ namespace CubeageSDK
             // Authenticate if no token
             if (string.IsNullOrEmpty(_accessToken))
             {
-                yield return DoAnonymousAuth();
+                // Step 1: Try legacy migration (one-time, on first launch with new SDK)
+                if (!string.IsNullOrEmpty(_legacyTokenKey) &&
+                    !PlayerPrefs.HasKey(PrefMigrationDone))
+                {
+                    var legacyToken = PlayerPrefs.GetString(_legacyTokenKey, "");
+                    if (!string.IsNullOrEmpty(legacyToken))
+                    {
+                        LogVerbose($"[CubeageSDK] Found legacy token — attempting migration");
+                        yield return DoMigrate(legacyToken);
+                    }
+                    // Mark migration as attempted (success or fail) — won't retry
+                    PlayerPrefs.SetInt(PrefMigrationDone, 1);
+                    PlayerPrefs.Save();
+                }
+
+                // Step 2: Fallback to anonymous auth if migration didn't produce a token
+                if (string.IsNullOrEmpty(_accessToken))
+                {
+                    yield return DoAnonymousAuth();
+                }
+
                 if (string.IsNullOrEmpty(_accessToken))
                 {
                     onError?.Invoke("Authentication failed");
@@ -348,6 +372,65 @@ namespace CubeageSDK
             FlushOfflineQueue();
 
             onComplete?.Invoke(_config);
+        }
+
+        // -----------------------------------------------------------------------
+        // Legacy Migration
+        // -----------------------------------------------------------------------
+
+        /// <summary>
+        /// Attempt to recover a legacy account using the old system's token.
+        /// Called once on first launch when legacyTokenKey is configured.
+        /// On success, stores the new platform tokens — user resumes their old account.
+        /// On failure (token expired, not found), falls through to anonymous auth.
+        /// </summary>
+        private IEnumerator DoMigrate(string legacyToken)
+        {
+#if UNITY_IOS
+            const string platform = "ios";
+#elif UNITY_ANDROID
+            const string platform = "android";
+#else
+            const string platform = "unknown";
+#endif
+            var body = $"{{" +
+                       $"\"gameSlug\":\"{EscapeJson(_appKey)}\"," +
+                       $"\"token\":\"{EscapeJson(legacyToken)}\"," +
+                       $"\"deviceInfo\":{{\"platform\":\"{platform}\",\"deviceId\":\"{EscapeJson(_deviceId)}\"}}" +
+                       $"}}";
+
+            var url = $"{_apiBaseUrl.TrimEnd('/')}/api/v1/sdk/migrate";
+            LogVerbose($"[CubeageSDK] POST {url} (legacy migration)");
+
+            using var req = new UnityWebRequest(url, "POST");
+            req.uploadHandler   = new UploadHandlerRaw(Encoding.UTF8.GetBytes(body));
+            req.downloadHandler = new DownloadHandlerBuffer();
+            req.SetRequestHeader("Content-Type", "application/json");
+            req.timeout = 20;
+
+            yield return req.SendWebRequest();
+
+            if (req.result == UnityWebRequest.Result.Success)
+            {
+                var resp = JsonUtility.FromJson<MigrateResponse>(req.downloadHandler.text);
+                if (resp != null && !string.IsNullOrEmpty(resp.accessToken))
+                {
+                    _accessToken  = resp.accessToken;
+                    _refreshToken = resp.refreshToken;
+                    _userId       = resp.userId;
+                    PlayerPrefs.SetString(PrefAccessToken, _accessToken);
+                    PlayerPrefs.SetString(PrefRefreshToken, _refreshToken);
+                    PlayerPrefs.SetString(PrefUserId, _userId);
+                    PlayerPrefs.Save();
+                    LogVerbose($"[CubeageSDK] Migration success — userId={_userId} " +
+                               $"isNewUser={resp.isNewUser} migratedFrom={resp.migratedFrom}");
+                }
+            }
+            else
+            {
+                // Non-fatal — fall through to anonymous auth
+                LogWarning($"[CubeageSDK] Legacy migration failed (HTTP {req.responseCode}): {req.error}");
+            }
         }
 
         // -----------------------------------------------------------------------
@@ -812,6 +895,7 @@ namespace CubeageSDK
                 _appKey         = settings.appKey;
                 _sdkVersion     = settings.sdkVersion;
                 _verboseLogging = settings.verboseLogging;
+                _legacyTokenKey = settings.legacyTokenKey;
             }
             else
             {
@@ -819,6 +903,7 @@ namespace CubeageSDK
                 _appKey         = Application.identifier;
                 _sdkVersion     = "2.0.0";
                 _verboseLogging = Debug.isDebugBuild;
+                _legacyTokenKey = "";
                 LogWarning("[CubeageSDK] CubeageSDKSettings asset not found — using defaults");
             }
         }
@@ -862,6 +947,16 @@ namespace CubeageSDK
             public string accessToken;
             public string refreshToken;
             public string userId;
+        }
+
+        [Serializable]
+        private class MigrateResponse
+        {
+            public string userId;
+            public string accessToken;
+            public string refreshToken;
+            public bool   isNewUser;
+            public string migratedFrom; // "mobile_sdk" | "platform" | "standalone" | null
         }
 
         [Serializable]

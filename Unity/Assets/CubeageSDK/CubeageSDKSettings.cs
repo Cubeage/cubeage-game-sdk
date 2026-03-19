@@ -34,6 +34,19 @@ namespace CubeageSDK.Editor
         [Tooltip("Log SDK HTTP calls and responses to the Unity console")]
         public bool verboseLogging = false;
 
+        [Header("Legacy Migration")]
+        [Tooltip(
+            "PlayerPrefs key where the OLD game SDK stored its session/device token.\n" +
+            "On first launch, if this key has a value, the SDK will call /api/v1/sdk/migrate " +
+            "to recover the user's legacy account.\n" +
+            "Leave empty if this game has no legacy users to migrate.\n\n" +
+            "Examples:\n" +
+            "  tntmobi_access_token  (Big2TycoonHK old PHP SDK)\n" +
+            "  platform_access_token (Cubeage Platform C# games)\n" +
+            "  game_device_id        (standalone Unity games)"
+        )]
+        public string legacyTokenKey = "";
+
         // -----------------------------------------------------------------------
         // Runtime access
         // -----------------------------------------------------------------------
