@@ -73,6 +73,7 @@ namespace CubeageSDK
 
         // Legacy migration
         private string _legacyTokenKey;
+        private string _legacyAndroidPrefsKey;
         private const string PrefMigrationDone = "cubeage_sdk_migration_done";
 
         private readonly SdkConfig _config = new SdkConfig();
@@ -324,10 +325,9 @@ namespace CubeageSDK
             if (string.IsNullOrEmpty(_accessToken))
             {
                 // Step 1: Try legacy migration (one-time, on first launch with new SDK)
-                if (!string.IsNullOrEmpty(_legacyTokenKey) &&
-                    !PlayerPrefs.HasKey(PrefMigrationDone))
+                if (!PlayerPrefs.HasKey(PrefMigrationDone))
                 {
-                    var legacyToken = PlayerPrefs.GetString(_legacyTokenKey, "");
+                    var legacyToken = GetLegacyToken();
                     if (!string.IsNullOrEmpty(legacyToken))
                     {
                         LogVerbose($"[CubeageSDK] Found legacy token — attempting migration");
@@ -377,6 +377,59 @@ namespace CubeageSDK
         // -----------------------------------------------------------------------
         // Legacy Migration
         // -----------------------------------------------------------------------
+
+        /// <summary>
+        /// Read the legacy identity token from the appropriate storage.
+        ///
+        /// Platform differences:
+        ///   iOS    → Unity PlayerPrefs (backed by NSUserDefaults) via legacyTokenKey
+        ///            e.g. key="udid" for TouchSDK device UUID
+        ///            e.g. key="playerId" for Cubeage Platform UserId
+        ///
+        ///   Android → Two possible sources:
+        ///     1. getDefaultSharedPreferences (TouchSDK .aar native games) via legacyAndroidPrefsKey
+        ///            e.g. key="deviceId" — the TouchSDK stores here, NOT in Unity PlayerPrefs
+        ///     2. Unity PlayerPrefs (Cubeage Platform C# games) via legacyTokenKey
+        ///            e.g. key="playerId" — stored by Unity code, readable directly
+        /// </summary>
+        private string GetLegacyToken()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            // Try Android native SharedPreferences first (for TouchSDK .aar games)
+            if (!string.IsNullOrEmpty(_legacyAndroidPrefsKey))
+            {
+                try
+                {
+                    using var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+                    using var context    = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+                    using var pm         = new AndroidJavaClass("android.preference.PreferenceManager");
+                    using var prefs      = pm.CallStatic<AndroidJavaObject>("getDefaultSharedPreferences", context);
+                    var token = prefs.Call<string>("getString", _legacyAndroidPrefsKey, "");
+                    if (!string.IsNullOrEmpty(token))
+                    {
+                        LogVerbose($"[CubeageSDK] Android legacy token via DefaultSharedPrefs[{_legacyAndroidPrefsKey}]");
+                        return token;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogWarning($"[CubeageSDK] Android DefaultSharedPrefs read failed: {ex.Message}");
+                }
+            }
+#endif
+            // iOS / Editor / Android-Unity-PlayerPrefs path
+            if (!string.IsNullOrEmpty(_legacyTokenKey))
+            {
+                var token = PlayerPrefs.GetString(_legacyTokenKey, "");
+                if (!string.IsNullOrEmpty(token))
+                {
+                    LogVerbose($"[CubeageSDK] Legacy token via PlayerPrefs[{_legacyTokenKey}]");
+                    return token;
+                }
+            }
+
+            return "";
+        }
 
         /// <summary>
         /// Attempt to recover a legacy account using the old system's token.
@@ -895,15 +948,17 @@ namespace CubeageSDK
                 _appKey         = settings.appKey;
                 _sdkVersion     = settings.sdkVersion;
                 _verboseLogging = settings.verboseLogging;
-                _legacyTokenKey = settings.legacyTokenKey;
+                _legacyTokenKey        = settings.legacyTokenKey;
+                _legacyAndroidPrefsKey = settings.legacyAndroidPrefsKey;
             }
             else
             {
-                _apiBaseUrl     = "https://api.cubeage.com";
-                _appKey         = Application.identifier;
-                _sdkVersion     = "2.0.0";
-                _verboseLogging = Debug.isDebugBuild;
-                _legacyTokenKey = "";
+                _apiBaseUrl            = "https://api.cubeage.com";
+                _appKey                = Application.identifier;
+                _sdkVersion            = "2.0.0";
+                _verboseLogging        = Debug.isDebugBuild;
+                _legacyTokenKey        = "";
+                _legacyAndroidPrefsKey = "";
                 LogWarning("[CubeageSDK] CubeageSDKSettings asset not found — using defaults");
             }
         }

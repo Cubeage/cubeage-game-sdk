@@ -36,16 +36,24 @@ namespace CubeageSDK.Editor
 
         [Header("Legacy Migration")]
         [Tooltip(
-            "PlayerPrefs key where the OLD game SDK stored its session/device token.\n" +
-            "On first launch, if this key has a value, the SDK will call /api/v1/sdk/migrate " +
-            "to recover the user's legacy account.\n" +
-            "Leave empty if this game has no legacy users to migrate.\n\n" +
-            "Examples:\n" +
-            "  tntmobi_access_token  (Big2TycoonHK old PHP SDK)\n" +
-            "  platform_access_token (Cubeage Platform C# games)\n" +
-            "  game_device_id        (standalone Unity games)"
+            "PlayerPrefs key where the OLD game SDK stored its identity token.\n" +
+            "Read on first launch to recover the user's legacy account via /api/v1/sdk/migrate.\n" +
+            "Leave empty to disable legacy migration.\n\n" +
+            "iOS examples:  'udid' (TouchSDK device UUID), 'playerId' (Cubeage Platform)\n" +
+            "Android examples: see legacyAndroidPrefsKey below"
         )]
         public string legacyTokenKey = "";
+
+        [Tooltip(
+            "Android only: key inside getDefaultSharedPreferences() where the old NATIVE SDK\n" +
+            "stored its device/user ID. The native SDK (TouchSDK .aar) uses a DIFFERENT\n" +
+            "SharedPreferences file from Unity PlayerPrefs, so we need JNI to read it.\n\n" +
+            "Set this for games using TouchSDK (Big2TycoonHK, Big2TycoonTW, Blackjack):\n" +
+            "  'deviceId'  — persistent device UUID (preferred, never expires)\n\n" +
+            "Leave empty for games that use Unity PlayerPrefs for auth\n" +
+            "(Cubeage Platform games like TWMJ/TWMJ2: use legacyTokenKey = 'playerId')"
+        )]
+        public string legacyAndroidPrefsKey = "";
 
         // -----------------------------------------------------------------------
         // Runtime access
