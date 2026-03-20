@@ -1,8 +1,9 @@
 --------------------------------------------------------------------------------
--- Cubeage Game SDK for Solar2D — Commercial Grade
+-- Cubeage Game SDK for Solar2D — Commercial Grade v2.1.0
 --
 -- Features:
 --   - Anonymous auth with Bearer token management
+--   - Legacy migration from old SDK (via file or PlayerPrefs)
 --   - Automatic session management (foreground/background)
 --   - Event tracking with batch support
 --   - Ad revenue tracking (LevelPlay ARM)
@@ -14,7 +15,7 @@
 --
 -- Usage:
 --   local cubeageSDK = require("cubeage_sdk")
---   cubeageSDK.init({ apiBaseUrl = "...", appKey = "..." }, function(config)
+--   cubeageSDK.init({ apiBaseUrl = "...", appKey = "...", legacyTokenFile = "" }, function(config)
 --       print("SDK ready!")
 --   end)
 --------------------------------------------------------------------------------
@@ -29,8 +30,9 @@ local M = {}
 
 local _apiBaseUrl     = ""
 local _appKey         = ""
-local _sdkVersion     = "2.0.0"
+local _sdkVersion     = "2.1.0"
 local _verbose        = false
+local _legacyTokenFile = ""   -- relative path inside DocumentsDirectory for migration
 
 local _deviceId       = ""
 local _accessToken    = ""
@@ -43,8 +45,6 @@ local _config         = {}
 
 local _offlineQueue   = {}
 local _isFlushing     = false
-local _initCallback   = nil
-local _initErrorCb    = nil
 
 local MAX_RETRIES     = 3
 local BASE_RETRY_MS   = 1000
@@ -82,14 +82,20 @@ local function loadJson(filename)
     return nil
 end
 
-local function savePrefs()
-    saveJson(PREFS_FILENAME, {
+local function savePrefs(extra)
+    local prefs = {
         deviceId     = _deviceId,
         accessToken  = _accessToken,
         refreshToken = _refreshToken,
         userId       = _userId,
         firstLaunch  = false,
-    })
+    }
+    if extra then
+        for k, v in pairs(extra) do
+            prefs[k] = v
+        end
+    end
+    saveJson(PREFS_FILENAME, prefs)
 end
 
 local function loadPrefs()
@@ -165,7 +171,6 @@ local function getLocale()
 end
 
 local function getTimezone()
-    -- Solar2D doesn't have a direct timezone API; use offset
     local utcdate = os.date("!*t")
     local localdate = os.date("*t")
     local diff = (localdate.hour - utcdate.hour)
@@ -173,12 +178,6 @@ local function getTimezone()
 end
 
 -- ─── HTTP Helpers ───────────────────────────────────────────────────────────
-
-local function isOnline()
-    -- Solar2D doesn't have a direct connectivity check;
-    -- we rely on network.request failure as offline indicator
-    return true
-end
 
 local function makeHeaders(withAuth)
     local headers = { ["Content-Type"] = "application/json" }
@@ -216,7 +215,6 @@ local function httpRequest(method, path, body, onSuccess, onError, retryCount)
 
         local status = event.status
         if status == 401 and retryCount == 0 then
-            -- Token expired — try refresh
             refreshToken(function()
                 httpRequest(method, path, body, onSuccess, onError, 1)
             end, function()
@@ -233,7 +231,6 @@ local function httpRequest(method, path, body, onSuccess, onError, retryCount)
             end
             if onSuccess then onSuccess(data, event.response) end
         elseif status >= 500 or status == 429 then
-            -- Server error — retry
             if retryCount < MAX_RETRIES then
                 local delay = BASE_RETRY_MS * math.pow(2, retryCount)
                 timer.performWithDelay(delay, function()
@@ -251,16 +248,23 @@ end
 
 -- ─── Auth ───────────────────────────────────────────────────────────────────
 
+local function storeTokens(data)
+    _accessToken  = data.accessToken  or ""
+    _refreshToken = data.refreshToken or ""
+    _userId       = data.userId       or ""
+    savePrefs()
+end
+
 local function anonymousAuth(onSuccess, onError)
     local body = json.encode({
         deviceId = _deviceId,
-        appKey   = _appKey,
+        gameSlug = _appKey,
     })
-    local url = _apiBaseUrl .. "/api/v1/auth/anonymous"
+    local url = _apiBaseUrl .. "/api/v1/sdk/auth/anonymous"
     log("POST " .. url)
 
     network.request(url, "POST", function(event)
-        if event.isError or event.status ~= 200 then
+        if event.isError or (event.status and event.status ~= 200) then
             logWarn("Auth failed: " .. tostring(event.response))
             if onError then onError("Auth failed") end
             return
@@ -268,10 +272,7 @@ local function anonymousAuth(onSuccess, onError)
 
         local ok, data = pcall(json.decode, event.response)
         if ok and data and data.accessToken then
-            _accessToken  = data.accessToken
-            _refreshToken = data.refreshToken or ""
-            _userId       = data.userId or ""
-            savePrefs()
+            storeTokens(data)
             log("Authenticated: " .. _userId)
             if onSuccess then onSuccess() end
         else
@@ -282,18 +283,16 @@ end
 
 function refreshToken(onSuccess, onError)
     if not _refreshToken or #_refreshToken == 0 then
-        -- No refresh token — re-auth
         anonymousAuth(onSuccess, onError)
         return
     end
 
     local body = json.encode({ refreshToken = _refreshToken })
-    local url = _apiBaseUrl .. "/api/v1/auth/refresh"
+    local url = _apiBaseUrl .. "/api/v1/sdk/auth/refresh"
 
     network.request(url, "POST", function(event)
-        if event.isError or event.status ~= 200 then
-            -- Refresh failed — re-auth
-            _accessToken = ""
+        if event.isError or (event.status and event.status ~= 200) then
+            _accessToken  = ""
             _refreshToken = ""
             anonymousAuth(onSuccess, onError)
             return
@@ -301,14 +300,114 @@ function refreshToken(onSuccess, onError)
 
         local ok, data = pcall(json.decode, event.response)
         if ok and data and data.accessToken then
-            _accessToken  = data.accessToken
-            _refreshToken = data.refreshToken or _refreshToken
-            savePrefs()
+            storeTokens(data)
             if onSuccess then onSuccess() end
         else
             anonymousAuth(onSuccess, onError)
         end
     end, { headers = { ["Content-Type"] = "application/json" }, body = body, timeout = 15 })
+end
+
+-- ─── Legacy Migration ────────────────────────────────────────────────────────
+
+--- Attempt to migrate from the old SDK by reading a legacy token file.
+--- @param legacyToken  string  The old device ID / token to migrate
+--- @param onSuccess    function  Called if migration succeeds (tokens stored)
+--- @param onFallback   function  Called if migration fails (should proceed to anon auth)
+local function doMigrate(legacyToken, onSuccess, onFallback)
+    log("Attempting legacy migration with token: " .. tostring(legacyToken))
+    local body = json.encode({
+        gameSlug = _appKey,
+        token    = legacyToken,
+    })
+    local url = _apiBaseUrl .. "/api/v1/sdk/migrate"
+
+    network.request(url, "POST", function(event)
+        if event.isError then
+            logWarn("Migration network error: " .. tostring(event.response))
+            if onFallback then onFallback() end
+            return
+        end
+
+        if event.status >= 200 and event.status < 300 then
+            local ok, data = pcall(json.decode, event.response)
+            if ok and data and data.accessToken then
+                storeTokens(data)
+                log("Migration success — userId=" .. tostring(_userId))
+                if onSuccess then onSuccess() end
+                return
+            end
+        end
+
+        logWarn("Migration failed (HTTP " .. tostring(event.status) .. ") — falling back to anonymous auth")
+        if onFallback then onFallback() end
+    end, { headers = { ["Content-Type"] = "application/json" }, body = body, timeout = 20 })
+end
+
+--- Check for a legacy token file and attempt migration if found.
+--- @param prefs       table   The loaded prefs object (may be nil)
+--- @param onDone      function  Called when migration step is complete (success or skipped)
+local function tryLegacyMigration(prefs, onDone)
+    -- Skip if already migrated
+    if prefs and prefs.migrationDone then
+        if onDone then onDone() end
+        return
+    end
+
+    -- Skip if no legacy file configured
+    if not _legacyTokenFile or #_legacyTokenFile == 0 then
+        log("No legacyTokenFile configured — skipping migration")
+        if onDone then onDone() end
+        return
+    end
+
+    -- Try to read the legacy token file
+    local legacyPath = system.pathForFile(_legacyTokenFile, system.DocumentsDirectory)
+    if not legacyPath then
+        log("Legacy token file path not resolvable — skipping migration")
+        if onDone then onDone() end
+        return
+    end
+
+    local file = io.open(legacyPath, "r")
+    if not file then
+        log("Legacy token file not found: " .. tostring(_legacyTokenFile))
+        if onDone then onDone() end
+        return
+    end
+
+    local content = file:read("*a")
+    file:close()
+
+    if not content or #content == 0 then
+        log("Legacy token file is empty — skipping migration")
+        if onDone then onDone() end
+        return
+    end
+
+    -- Trim whitespace
+    local legacyToken = content:match("^%s*(.-)%s*$")
+    if not legacyToken or #legacyToken == 0 then
+        log("Legacy token is blank after trim — skipping migration")
+        if onDone then onDone() end
+        return
+    end
+
+    -- Attempt migration
+    doMigrate(legacyToken,
+        -- onSuccess
+        function()
+            -- Mark migration done in prefs
+            savePrefs({ migrationDone = true })
+            if onDone then onDone() end
+        end,
+        -- onFallback
+        function()
+            -- Mark migration as attempted so we don't retry
+            savePrefs({ migrationDone = true })
+            if onDone then onDone() end
+        end
+    )
 end
 
 -- ─── Offline Queue ──────────────────────────────────────────────────────────
@@ -374,7 +473,7 @@ local function startSession(onComplete)
         timezone    = getTimezone(),
     })
 
-    httpRequest("POST", "/api/v1/sessions/start", body, function(data)
+    httpRequest("POST", "/api/v1/sdk/session/start", body, function(data)
         if data and data.sessionId then
             _sessionId = data.sessionId
             _sessionActive = true
@@ -392,7 +491,7 @@ local function endSession(onComplete)
     _sessionId = nil
 
     local body = json.encode({ sessionId = sid })
-    httpRequest("POST", "/api/v1/sessions/end", body, function(data)
+    httpRequest("POST", "/api/v1/sdk/session/end", body, function(data)
         if data then
             log("Session ended: " .. tostring(data.durationSeconds) .. "s")
             if onComplete then onComplete(data.durationSeconds) end
@@ -417,7 +516,7 @@ end
 -- ─── Public API ─────────────────────────────────────────────────────────────
 
 --- Initialize the SDK.
---- @param options table { apiBaseUrl, appKey, sdkVersion?, verbose? }
+--- @param options table { apiBaseUrl, appKey, sdkVersion?, verboseLogging?, legacyTokenFile? }
 --- @param onComplete function(config) Called when init succeeds.
 --- @param onError function(msg) Called on failure.
 function M.init(options, onComplete, onError)
@@ -426,26 +525,27 @@ function M.init(options, onComplete, onError)
         return
     end
 
-    _apiBaseUrl  = (options.apiBaseUrl or "https://api.cubeage.com"):gsub("/$", "")
-    _appKey      = options.appKey or ""
-    _sdkVersion  = options.sdkVersion or "2.0.0"
-    _verbose     = options.verbose or false
+    _apiBaseUrl       = (options.apiBaseUrl or "https://api.cubeage.com"):gsub("/$", "")
+    _appKey           = options.appKey or ""
+    _sdkVersion       = options.sdkVersion or "2.1.0"
+    _verbose          = options.verboseLogging or options.verbose or false
+    _legacyTokenFile  = options.legacyTokenFile or ""
 
     -- Load persisted state
     local prefs = loadPrefs()
     _deviceId = resolveDeviceId()
 
     if prefs then
-        _accessToken  = prefs.accessToken or ""
+        _accessToken  = prefs.accessToken  or ""
         _refreshToken = prefs.refreshToken or ""
-        _userId       = prefs.userId or ""
+        _userId       = prefs.userId       or ""
     end
 
     loadQueue()
 
     local function onAuthDone()
-        -- Fetch config
-        httpRequest("GET", "/api/v1/apps/" .. _appKey .. "/config", nil, function(data)
+        -- Fetch remote config
+        httpRequest("GET", "/api/v1/sdk/apps/" .. _appKey .. "/config", nil, function(data)
             if data and data.config then
                 _config = data.config
             end
@@ -468,8 +568,8 @@ function M.init(options, onComplete, onError)
 
             savePrefs()
             if onComplete then onComplete(_config) end
-        end, function(err)
-            -- Config fetch failed, but still init
+        end, function()
+            -- Config fetch failed — continue anyway
             _initialized = true
             Runtime:addEventListener("system", onSystemEvent)
             startSession()
@@ -479,10 +579,20 @@ function M.init(options, onComplete, onError)
     end
 
     if #_accessToken > 0 then
+        -- Already authenticated — skip migration, go straight to init
         onAuthDone()
     else
-        anonymousAuth(onAuthDone, function(err)
-            if onError then onError(err) end
+        -- Step 1: Attempt legacy migration (one-time)
+        tryLegacyMigration(prefs, function()
+            if #_accessToken > 0 then
+                -- Migration succeeded
+                onAuthDone()
+            else
+                -- Step 2: Anonymous auth
+                anonymousAuth(onAuthDone, function(err)
+                    if onError then onError(err) end
+                end)
+            end
         end)
     end
 end
@@ -494,7 +604,7 @@ function M.trackEvent(eventName, attributes)
         appKey = _appKey,
         events = {{ name = eventName, properties = attributes or {} }},
     })
-    enqueueOrSend("POST", "/api/v1/events/batch", body)
+    enqueueOrSend("POST", "/api/v1/sdk/event/batch", body)
 end
 
 --- Track an IAP purchase.
@@ -529,7 +639,7 @@ function M.trackAttribution(onComplete)
         appKey        = _appKey,
         platform      = getPlatform(),
         deviceId      = _deviceId,
-        advertisingId = "", -- ATT/GAID not directly accessible in Solar2D
+        advertisingId = "",
         appVersion    = system.getInfo("appVersionString") or "1.0.0",
         osVersion     = getOSVersion(),
         deviceModel   = getDeviceModel(),
@@ -544,7 +654,6 @@ function M.trackAttribution(onComplete)
 end
 
 --- Track ad revenue from mediation SDK.
---- @param impressionData table { adNetwork, adUnit?, adFormat?, placement?, revenue, currency?, precision?, country? }
 function M.trackAdRevenue(impressionData)
     if not _initialized then logWarn("Not initialized"); return end
     local body = json.encode({
@@ -552,13 +661,13 @@ function M.trackAdRevenue(impressionData)
         sessionId = _sessionId or "",
         impressions = {{
             adNetwork = impressionData.adNetwork or "unknown",
-            adUnit    = impressionData.adUnit or "",
-            adFormat  = impressionData.adFormat or "",
+            adUnit    = impressionData.adUnit    or "",
+            adFormat  = impressionData.adFormat  or "",
             placement = impressionData.placement or "",
-            revenue   = impressionData.revenue or 0,
-            currency  = impressionData.currency or "USD",
+            revenue   = impressionData.revenue   or 0,
+            currency  = impressionData.currency  or "USD",
             precision = impressionData.precision or "estimated",
-            country   = impressionData.country or "",
+            country   = impressionData.country   or "",
         }},
     })
     enqueueOrSend("POST", "/api/v1/revenue/ad", body)
@@ -582,7 +691,7 @@ function M.checkForUpdate(onComplete, onError)
         if onError then onError("Not initialized") end
         return
     end
-    httpRequest("GET", "/api/v1/apps/" .. _appKey .. "/update", nil, function(data)
+    httpRequest("GET", "/api/v1/sdk/apps/" .. _appKey .. "/update", nil, function(data)
         if onComplete then onComplete(data) end
     end, onError)
 end
