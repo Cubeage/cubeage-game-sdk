@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 1,
+  "project": {
+    "repo": "Cubeage/cubeage-game-sdk",
+    "name": "Cubeage Game SDK",
+    "lifecycle": "active",
+    "layer": "integration",
+    "summary": "Source SDK package repository for Cubeage Platform integrations across Unity, Cocos Creator, and Solar2D games.",
+    "goals": [
+      "Own the Unity, Cocos Creator, and Solar2D SDK source packages in this repository.",
+      "Provide game-client integration primitives for Cubeage auth, sessions, analytics, purchases, attribution, force-update checks, and offline queueing.",
+      "Preserve explicitly implemented legacy-token migration behavior for supported engine SDKs."
+    ],
+    "nonGoals": [
+      "Own backend platform API behavior, billing validation services, or analytics storage.",
+      "Own game-specific feature logic, economy behavior, UI content, or product experiments.",
+      "Own the newer Android/iOS native SDK v3 release workflow."
+    ]
+  },
+  "boundaries": {
+    "owns": [
+      {
+        "name": "unity-game-sdk",
+        "description": "Unity source package and runtime API under Unity/Assets/CubeageSDK."
+      },
+      {
+        "name": "cocos-game-sdk",
+        "description": "Cocos Creator TypeScript SDK source and configuration surface under Cocos/."
+      },
+      {
+        "name": "solar2d-game-sdk",
+        "description": "Solar2D Lua SDK source and configuration surface under Solar2D/."
+      },
+      {
+        "name": "legacy-token-migration",
+        "description": "SDK-local migration helpers for supported legacy client tokens and storage keys."
+      }
+    ],
+    "doesNotOwn": [
+      "Cubeage backend platform API behavior, storage, billing validation, or analytics processing.",
+      "Host game feature logic, economy tuning, UI content, or product experiments.",
+      "Android/iOS native SDK v3 release artifacts and GitHub Release workflow."
+    ],
+    "publicSurfaces": [
+      {
+        "type": "package-export",
+        "name": "Unity package manifest",
+        "location": "Unity/Assets/CubeageSDK/package.json"
+      },
+      {
+        "type": "sdk",
+        "name": "Unity runtime API",
+        "location": "Unity/Assets/CubeageSDK/CubeageSDK.cs"
+      },
+      {
+        "type": "sdk",
+        "name": "Cocos Creator SDK",
+        "location": "Cocos/CubeageSDK.ts"
+      },
+      {
+        "type": "manifest",
+        "name": "Cocos Creator configuration",
+        "location": "Cocos/CubeageSDKConfig.ts"
+      },
+      {
+        "type": "sdk",
+        "name": "Solar2D SDK module",
+        "location": "Solar2D/cubeage_sdk.lua"
+      },
+      {
+        "type": "manifest",
+        "name": "Solar2D configuration",
+        "location": "Solar2D/cubeage_sdk_config.lua"
+      }
+    ],
+    "allowedDependencies": [
+      {
+        "repo": "SylphxAI/platform",
+        "surface": "Cubeage platform HTTP/API contract consumed by SDK clients",
+        "direction": "downward"
+      },
+      {
+        "repo": "Cubeage/cubeage-native-sdk",
+        "surface": "documented native SDK package/release surfaces only",
+        "direction": "peer-public"
+      }
+    ],
+    "forbiddenCouplings": [
+      "Do not add game-specific feature logic, economy tuning, UI content, or product experiments to the SDK core.",
+      "Do not reach into backend repository internals instead of consuming documented API contracts.",
+      "Do not treat this legacy/source SDK repo as the owner of the native SDK v3 release train."
+    ]
+  },
+  "documentation": {
+    "adr": {
+      "path": "docs/adr/",
+      "status": "planned"
+    },
+    "specs": {
+      "path": "Unity/Assets/CubeageSDK/package.json",
+      "status": "present"
+    },
+    "catalog": {
+      "path": ".doctrine/project.json",
+      "status": "present"
+    },
+    "runbooks": {
+      "path": "PROJECT.md",
+      "status": "present"
+    },
+    "generatedReferences": {
+      "path": "Unity/Assets/CubeageSDK/package.json",
+      "status": "present"
+    }
+  },
+  "delivery": {
+    "ciModel": "none",
+    "requiredContexts": [],
+    "deployPath": "Source SDK changes land on main; no CI workflow, registry publication workflow, or GitHub Release workflow is configured in this repository.",
+    "productionProof": "Runtime SDK changes require source readback plus host-game or engine-level integration smoke proof before production use. Manifest-only changes are proven by doctrine project-control audit.",
+    "recoveryClass": "source-revertable"
+  },
+  "adoption": {
+    "status": "baseline",
+    "gaps": [
+      {
+        "id": "ci-adoption",
+        "description": "Repository has no CI workflow for SDK package validation.",
+        "owner": "Cubeage/cubeage-game-sdk",
+        "target": "Future CI adoption issue"
+      },
+      {
+        "id": "package-release-control-plane",
+        "description": "Unity package metadata is versioned in source, but no bot-owned package release or registry/provenance workflow is configured.",
+        "owner": "Cubeage/cubeage-game-sdk",
+        "target": "Future package release control-plane issue"
+      }
+    ]
+  }
+}
